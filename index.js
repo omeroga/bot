@@ -5,27 +5,18 @@ app.use(express.json());
 
 const GREEN_API_ID = process.env.GREEN_API_ID || '7103982441'; 
 const GREEN_API_TOKEN = process.env.GREEN_API_TOKEN || '1692237078334861933f92606440db97486e921d27574929a0';
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY ? process.env.OPENAI_API_KEY.trim() : null;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY; 
 const SHEET_URL = 'https://docs.google.com/spreadsheets/d/1LUpyB8N-63EVOFCmzrolCm3mR0Mr6g8hAqtf7SfkUug/export?format=csv';
-
-async function getSheetData() {
-    try {
-        const response = await axios.get(SHEET_URL);
-        return response.data;
-    } catch (error) {
-        console.error("Sheet Fetch Error:", error.message);
-        return "No inventory data available.";
-    }
-}
 
 app.post('/webhook', async (req, res) => {
     try {
         const data = req.body;
-        if (data.typeWebhook === 'incomingMessageReceived' && OPENAI_API_KEY) {
+        if (data.typeWebhook === 'incomingMessageReceived') {
             const chatId = data.senderData.chatId;
             const userMessage = data.messageData.textMessageData.textMessage;
 
-            const inventory = await getSheetData();
+            const sheetRes = await axios.get(SHEET_URL);
+            const inventory = sheetRes.data;
 
             const aiResponse = await axios.post('https://api.openai.com/v1/chat/completions', {
                 model: "gpt-4o-mini",
@@ -33,20 +24,18 @@ app.post('/webhook', async (req, res) => {
                     { 
                         role: "system", 
                         content: `You are a professional car sales agent in Guatemala. 
-                        Use the following CSV inventory data to answer:
-                        ${inventory}
-                        
+                        Inventory Data: ${inventory}
                         Rules:
-                        1. Answer only based on the provided data.
-                        2. If asked for a photo, provide the link from the image column.
-                        3. Be sales-oriented, professional, and concise.
-                        4. Respond in the same language as the customer (Hebrew or Spanish).`
+                        1. Use only provided data.
+                        2. Send links from 'Fotos' column when asked for images.
+                        3. Be professional and sales-oriented.
+                        4. Respond in the user's language (Hebrew or Spanish).`
                     },
                     { role: "user", content: userMessage }
                 ]
             }, {
                 headers: { 
-                    'Authorization': `Bearer ${OPENAI_API_KEY}`,
+                    'Authorization': `Bearer ${OPENAI_API_KEY ? OPENAI_API_KEY.trim() : ''}`,
                     'Content-Type': 'application/json'
                 }
             });
@@ -61,9 +50,9 @@ app.post('/webhook', async (req, res) => {
         res.sendStatus(200);
     } catch (error) {
         if (error.response) {
-            console.error("OpenAI Error:", error.response.status, JSON.stringify(error.response.data));
+            console.error("Detailed OpenAI Error:", error.response.status, JSON.stringify(error.response.data));
         } else {
-            console.error("Internal Error:", error.message);
+            console.error("System Error:", error.message);
         }
         res.sendStatus(500);
     }
