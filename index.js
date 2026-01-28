@@ -5,7 +5,7 @@ app.use(express.json());
 
 const GREEN_API_ID = process.env.GREEN_API_ID || '7103982441'; 
 const GREEN_API_TOKEN = process.env.GREEN_API_TOKEN || '1692237078334861933f92606440db97486e921d27574929a0';
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY; 
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY ? process.env.OPENAI_API_KEY.trim() : null;
 const SHEET_URL = 'https://docs.google.com/spreadsheets/d/1LUpyB8N-63EVOFCmzrolCm3mR0Mr6g8hAqtf7SfkUug/export?format=csv';
 
 async function getSheetData() {
@@ -13,7 +13,7 @@ async function getSheetData() {
         const response = await axios.get(SHEET_URL);
         return response.data;
     } catch (error) {
-        console.error("Error fetching sheet:", error.message);
+        console.error("Sheet Fetch Error:", error.message);
         return "No inventory data available.";
     }
 }
@@ -21,7 +21,7 @@ async function getSheetData() {
 app.post('/webhook', async (req, res) => {
     try {
         const data = req.body;
-        if (data.typeWebhook === 'incomingMessageReceived') {
+        if (data.typeWebhook === 'incomingMessageReceived' && OPENAI_API_KEY) {
             const chatId = data.senderData.chatId;
             const userMessage = data.messageData.textMessageData.textMessage;
 
@@ -32,15 +32,15 @@ app.post('/webhook', async (req, res) => {
                 messages: [
                     { 
                         role: "system", 
-                        content: `אתה סוכן מכירות רכב מקצועי בגואטמלה. 
-                        הנתונים הבאים מגיעים מקובץ CSV של המלאי שלנו (השורה הראשונה היא כותרות):
+                        content: `You are a professional car sales agent in Guatemala. 
+                        Use the following CSV inventory data to answer:
                         ${inventory}
                         
-                        הנחיות:
-                        1. ענה ללקוח רק על בסיס הנתונים האלו.
-                        2. אם לקוח מבקש תמונה, שלח לו את הקישור שמופיע בעמודה המתאימה.
-                        3. שמור על טון מכירתי אך תמציתי.
-                        4. ענה בשפה שבה פנו אליך (עברית או ספרדית).`
+                        Rules:
+                        1. Answer only based on the provided data.
+                        2. If asked for a photo, provide the link from the image column.
+                        3. Be sales-oriented, professional, and concise.
+                        4. Respond in the same language as the customer (Hebrew or Spanish).`
                     },
                     { role: "user", content: userMessage }
                 ]
@@ -61,10 +61,9 @@ app.post('/webhook', async (req, res) => {
         res.sendStatus(200);
     } catch (error) {
         if (error.response) {
-            // זה ידפיס לך ב-Render בדיוק מה OpenAI אומרים
-            console.error("OpenAI Error:", error.response.status, error.response.data);
+            console.error("OpenAI Error:", error.response.status, JSON.stringify(error.response.data));
         } else {
-            console.error("System Error:", error.message);
+            console.error("Internal Error:", error.message);
         }
         res.sendStatus(500);
     }
