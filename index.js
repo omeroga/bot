@@ -23,19 +23,13 @@ app.post('/webhook', async (req, res) => {
                 messages: [
                     { 
                         role: "system", 
-                        content: `You are a professional car sales agent in Guatemala. 
-                        Inventory Data: ${inventory}
-                        Rules:
-                        1. Use only provided data.
-                        2. Send links from 'Fotos' column when asked for images.
-                        3. Be professional and sales-oriented.
-                        4. Respond in the user's language (Hebrew or Spanish).`
+                        content: "You are a professional car sales agent in Guatemala. Inventory: " + inventory + " Rules: Use only provided data. Send links from 'Fotos' column for images. Respond in the user's language." 
                     },
                     { role: "user", content: userMessage }
                 ]
             }, {
                 headers: { 
-                    'Authorization': `Bearer ${OPENAI_API_KEY ? OPENAI_API_KEY.trim() : ''}`,
+                    'Authorization': 'Bearer ' + OPENAI_API_KEY,
                     'Content-Type': 'application/json'
                 }
             });
@@ -49,11 +43,7 @@ app.post('/webhook', async (req, res) => {
         }
         res.sendStatus(200);
     } catch (error) {
-        if (error.response) {
-            console.error("Detailed OpenAI Error:", error.response.status, JSON.stringify(error.response.data));
-        } else {
-            console.error("System Error:", error.message);
-        }
+        console.error("OpenAI Error:", error.response ? error.response.status : error.message);
         res.sendStatus(500);
     }
 });
