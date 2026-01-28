@@ -5,9 +5,9 @@ app.use(express.json());
 
 const config = {
     openaiKey: 'Sk-proj-VgjNl4PTBnfVyOdYzIo8P1e4UoZkYmZ9KHX6tuX9BvivqIxoQ_XSDPVCnanAMaFBwRYyei8k6MT3BlbkFJgW_0VKSQh91oUt15KSJXwY5Oqqwel25r3NopMCOGHjh6CZBZ4998zXKZ2dy1B34Vpj2wTsHq4A',
-    greenApiId: '7107492666',
-    greenApiToken: '1cc247a0c53c4c77af473a0355748b499fd42250c1c54711bc',
-    myGuatemalaNumber: '50231390807@c.us' // המספר היחיד שהבוט יגיב לו
+    greenApiId: '7103493933', // ה-ID החדש
+    greenApiToken: 'c446cd44a80b4266b471114f5aa73677fc9ce447f578402682', // הטוקן החדש
+    myGuatemalaNumber: '50231390807@c.us' // מספר הבדיקה שלך
 };
 
 // פונקציית המוח (ChatGPT)
@@ -69,8 +69,6 @@ app.post('/webhook', async (req, res) => {
                     await sendWhatsApp(customerChatId, aiReply);
                     console.log(`[Bot Reply Sent]`);
                 }
-            } else {
-                console.log(`[Ignored]: Message from ${customerChatId} - Not the test number.`);
             }
         }
         res.sendStatus(200);
@@ -83,5 +81,5 @@ app.post('/webhook', async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
-    console.log(`Bot is locked to: ${config.myGuatemalaNumber}`);
+    console.log(`Bot is connected to NEW Instance: ${config.greenApiId}`);
 });
