@@ -2,12 +2,13 @@
   "name": "bot",
   "version": "1.0.0",
   "description": "WhatsApp AI sales bot MVP",
-  "main": "server.js",
+  "main": "index.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node index.js"
   },
   "dependencies": {
-    "axios": "^1.6.8",
+    "@supabase/supabase-js": "^2.49.1",
+    "axios": "^1.13.4",
     "express": "^4.19.2"
   }
 }
