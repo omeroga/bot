@@ -4,7 +4,7 @@ const app = express();
 app.use(express.json());
 
 const config = {
-    openaiKey: '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',
+    openaiKey: process.env.OPENAI_API_KEY,
     greenApiId: '7103493933',
     greenApiToken: 'c446cd44a80b4266b471114f5aa73677fc9ce447f578402682',
     myGuatemalaNumber: '50231390807@c.us'
