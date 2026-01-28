@@ -18,8 +18,10 @@ app.post('/webhook', async (req, res) => {
             return res.sendStatus(500);
         }
 
-        const data = req.body;
-        if (data.typeWebhook === 'incomingMessageReceived') {
+                const data = req.body;
+        
+        // This check ensures we only process actual text messages
+        if (data.typeWebhook === 'incomingMessageReceived' && data.messageData?.textMessageData?.textMessage) {
             const chatId = data.senderData.chatId;
             const userMessage = data.messageData.textMessageData.textMessage;
 
