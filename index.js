@@ -44,10 +44,10 @@ app.post('/webhook', async (req, res) => {
 
             const reply = aiResponse.data.choices[0].message.content;
 
-            await axios.post(`https://7103.api.greenapi.com/waInstance${GREEN_API_ID}/sendMessage/${GREEN_API_TOKEN}`, {
-                chatId: chatId,
-                message: reply
-            });
+            await axios.post(`https://api.greenapi.com/waInstance${GREEN_API_ID}/sendMessage/${GREEN_API_TOKEN}`, {
+    chatId: chatId,
+    message: reply
+});
         }
         res.sendStatus(200);
     } catch (error) {
