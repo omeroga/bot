@@ -3,7 +3,6 @@ const axios = require('axios');
 const app = express();
 app.use(express.json());
 
-// משיכת המפתחות מהגדרות השרת (Environment Variables)
 const GREEN_API_ID = process.env.GREEN_API_ID || '7103982441'; 
 const GREEN_API_TOKEN = process.env.GREEN_API_TOKEN || '1692237078334861933f92606440db97486e921d27574929a0';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY; 
@@ -14,7 +13,7 @@ async function getSheetData() {
         const response = await axios.get(SHEET_URL);
         return response.data;
     } catch (error) {
-        console.error("Error fetching sheet:", error);
+        console.error("Error fetching sheet:", error.message);
         return "No inventory data available.";
     }
 }
@@ -33,16 +32,23 @@ app.post('/webhook', async (req, res) => {
                 messages: [
                     { 
                         role: "system", 
-                        content: `אתה סוכן מכירות רכב מקצועי וכריזמטי בגואטמלה. 
-                        הנה רשימת הרכבים המעודכנת מהמלאי שלנו:
+                        content: `אתה סוכן מכירות רכב מקצועי בגואטמלה. 
+                        הנתונים הבאים מגיעים מקובץ CSV של המלאי שלנו (השורה הראשונה היא כותרות):
                         ${inventory}
-                        ענה ללקוח על בסיס הנתונים האלו. תהיה מכירתי, קצר (עד 50 מילים).
-                        אם מבקשים תמונה, שלח את הלינק שמופיע בעמודת התמונות בשיטס.`
+                        
+                        הנחיות:
+                        1. ענה ללקוח רק על בסיס הנתונים האלו.
+                        2. אם לקוח מבקש תמונה, שלח לו את הקישור שמופיע בעמודה המתאימה.
+                        3. שמור על טון מכירתי אך תמציתי.
+                        4. ענה בשפה שבה פנו אליך (עברית או ספרדית).`
                     },
                     { role: "user", content: userMessage }
                 ]
             }, {
-                headers: { 'Authorization': `Bearer ${OPENAI_API_KEY}` }
+                headers: { 
+                    'Authorization': `Bearer ${OPENAI_API_KEY}`,
+                    'Content-Type': 'application/json'
+                }
             });
 
             const reply = aiResponse.data.choices[0].message.content;
@@ -54,7 +60,12 @@ app.post('/webhook', async (req, res) => {
         }
         res.sendStatus(200);
     } catch (error) {
-        console.error("Error:", error);
+        if (error.response) {
+            // זה ידפיס לך ב-Render בדיוק מה OpenAI אומרים
+            console.error("OpenAI Error:", error.response.status, error.response.data);
+        } else {
+            console.error("System Error:", error.message);
+        }
         res.sendStatus(500);
     }
 });
