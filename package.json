@@ -1,24 +1,13 @@
 {
   "name": "bot",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "WhatsApp AI sales bot MVP",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node server.js"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/EvolutionAPI/evolution-api.git"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "bugs": {
-    "url": "https://github.com/EvolutionAPI/evolution-api/issues"
-  },
-  "homepage": "https://github.com/EvolutionAPI/evolution-api#readme",
   "dependencies": {
-    "axios": "^1.13.4",
-    "express": "^5.2.1"
+    "axios": "^1.6.8",
+    "express": "^4.19.2"
   }
 }
