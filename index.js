@@ -383,38 +383,34 @@ async function buildInventorySubset(chatId, inventory, userMessage) {
 // ----------------- OpenAI + GreenAPI -----------------
 async function sendWhatsAppMessage(chatId, message) {
   try {
-    // Split the message into lines and clean spaces
-    const lines = String(message || "").trim().split(/\r?\n/).map(x => x.trim()).filter(Boolean);
-    
-    // Check if a line is a pure URL
-    const urlPattern = /^https?:\/\/\S+$/i;
-    const urls = lines.filter(x => urlPattern.test(x));
+    const text = String(message || "").trim();
 
-    // If EVERY line is a URL, treat it as a gallery
-    const isOnlyUrls = urls.length > 0 && urls.length === lines.length;
+    // 1. קודם כל שולח את הודעת הטקסט (הסברים + לינקים)
+    const textUrl = `https://api.greenapi.com/waInstance${GREEN_API_ID}/sendMessage/${GREEN_API_TOKEN}`;
+    await axios.post(textUrl, { chatId, message: text }, { timeout: 20000 });
 
-    if (isOnlyUrls) {
-      for (const url of urls.slice(0, 5)) { // Limit to 5 photos to avoid spam
+    // 2. מוציא את הלינקים של התמונות ושולח אותן כקבצים ויזואליים
+    const urls = text.match(/https?:\/\/\S+/gi) || [];
+    const imageUrls = urls.filter((u) => 
+      /lh3\.googleusercontent\.com|drive\.google\.com|jpg|jpeg|png/i.test(u)
+    );
+
+    if (imageUrls.length > 0) {
+      for (const url of imageUrls.slice(0, 5)) {
         const fileUrl = `https://api.greenapi.com/waInstance${GREEN_API_ID}/sendFileByUrl/${GREEN_API_TOKEN}`;
         await axios.post(
           fileUrl,
-          { 
-            chatId, 
-            urlFile: url, 
-            fileName: "car_photo.jpg" 
+          {
+            chatId,
+            urlFile: url,
+            fileName: "car_photo.jpg"
           },
           { timeout: 20000 }
         );
       }
-      return; // Exit after sending photos
     }
-
-    // Default: Send as normal text message
-    const textUrl = `https://api.greenapi.com/waInstance${GREEN_API_ID}/sendMessage/${GREEN_API_TOKEN}`;
-    await axios.post(textUrl, { chatId, message }, { timeout: 20000 });
-    
-  } catch (error) {
-    console.error("❌ Error in sendWhatsAppMessage:", error.message);
+  } catch (err) {
+    console.error("❌ sendWhatsAppMessage error:", err.message);
   }
 }
 
