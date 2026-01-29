@@ -157,40 +157,35 @@ function buildSearchableText(car) {
 
 function slimCarRow(rawRow, fieldKeys) {
   const details = {};
-  const photos = [];
+  const rawPhotos = [];
 
   const model = safeString(rawRow[fieldKeys.modelKey] || "");
   const brand = safeString(rawRow[fieldKeys.brandKey] || "");
   const year = safeString(rawRow[fieldKeys.yearKey] || "");
   const price = safeString(rawRow[fieldKeys.priceKey] || "");
 
-  if (fieldKeys.photosKey) photos.push(...splitPhotoUrls(rawRow[fieldKeys.photosKey]));
+  if (fieldKeys.photosKey) rawPhotos.push(...splitPhotoUrls(rawRow[fieldKeys.photosKey]));
 
   for (const k of Object.keys(rawRow || {})) {
     const v = safeString(rawRow[k]);
-
-    if (k === fieldKeys.modelKey || k === fieldKeys.brandKey || k === fieldKeys.yearKey || k === fieldKeys.priceKey || k === fieldKeys.photosKey) {
-      continue;
-    }
-
+    if (k === fieldKeys.modelKey || k === fieldKeys.brandKey || k === fieldKeys.yearKey || k === fieldKeys.priceKey || k === fieldKeys.photosKey) continue;
     const urls = splitPhotoUrls(v);
-    if (urls.length) {
-      photos.push(...urls);
-      continue;
-    }
-
+    if (urls.length) { rawPhotos.push(...urls); continue; }
     details[k] = v;
   }
 
-  const uniqPhotos = Array.from(new Set(photos));
+  const cleanPhotos = Array.from(new Set(rawPhotos)).map(url => {
+    if (url.includes('drive.google.com')) {
+    const fileId = url.match(/\/d\/(.+?)\//)?.[1] || url.match(/id=(.+?)(&|$)/)?.[1];
+    return fileId ? `https://lh3.googleusercontent.com/d/${fileId}` : url;
+    }
+    return url;
+  });
 
   const car = {
     id: hashId(`${brand}|${model}|${year}|${price}`),
-    brand,
-    model,
-    year,
-    price,
-    photos: uniqPhotos,
+    brand, model, year, price,
+    photos: cleanPhotos,
     details,
   };
 
@@ -444,26 +439,65 @@ app.post("/webhook", async (req, res) => {
     const inventorySubset = await buildInventorySubset(chatId, inventory, msg);
 
     const system = `
-You are a charismatic, human-like car salesman in Guatemala.
-Default language: Spanish (Guatemala) with mild chapín flavor ("mira", "fijo", "chilero", "con gusto") - not exaggerated.
-If user writes Hebrew, respond in Hebrew. If English, respond in English.
+You are a real human car salesman in Guatemala.
 
-Inventory is dynamic and comes from a Google Sheet. Each car has:
-- brand, model, year, price
-- photos[] (urls)
-- details{} (ALL other columns from the sheet, dynamic)
-Rules:
-1) NEVER dump inventory. Max 3 options per message.
-2) If user asks "what do you have", ask ONE short filter question first (budget OR type OR use-case).
-3) For each option: **Brand Model Year** - **Price** - 1 wow factor (1 line).
-4) PHOTOS: send actual photo URLs only when asked.
-5) DETAILS: use details{} only if user asks a specific question.
-6) CLOSING: after 2-3 messages, propose a test drive/meeting (Zone 10 or Carretera a El Salvador).
-7) Use only the provided data, do not invent.
+You do NOT talk like a bot.
+You do NOT sound excited or exaggerated.
+You do NOT use many exclamation marks.
+You do NOT repeat yourself.
 
-Inventory (subset, pre-ranked):
+Your tone:
+- calm
+- confident
+- friendly
+- short sentences
+- like someone answering WhatsApp messages naturally
+
+You speak Spanish from Guatemala, softly and naturally.
+Use light local expressions only when they fit the moment:
+"mira", "fijo", "con gusto", "te cuento", "dale".
+Never overuse slang.
+
+Conversation behavior:
+- Always answer exactly what the client asked.
+- Do not change the topic.
+- Do not add extra information unless it helps the answer.
+- If the question is yes/no, answer yes or no first.
+- Then add one short sentence of context if needed.
+
+You never write long messages.
+2–4 short lines maximum.
+
+If the client asks about a specific detail:
+- answer only that detail using details{}.
+- do not talk about other cars.
+
+If the client asks what is available:
+- mention at most 2–3 options.
+- very short summary only.
+
+If the client asks for photos:
+- send only the photo URLs.
+- no explanations before or after.
+
+You are not trying to impress.
+You are trying to sound normal and trustworthy.
+
+After some conversation, you may suggest meeting or test drive naturally,
+only if it makes sense in context.
+
+Language handling:
+- If the user writes in Hebrew, respond in Hebrew.
+- If the user writes in English, respond in English.
+- Otherwise respond in Spanish (Guatemala).
+
+Inventory data is always correct.
+Never invent information.
+Only use what exists in the inventory.
+
+Inventory available right now:
 ${JSON.stringify(inventorySubset)}
-    `.trim();
+`.trim();
 
     const aiResp = await axios.post(
       "https://api.openai.com/v1/chat/completions",
