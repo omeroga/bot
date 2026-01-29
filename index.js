@@ -170,9 +170,10 @@ function slimCarRow(rawRow, fieldKeys) {
     details[k] = v;
   }
 
-  const cleanPhotos = Array.from(new Set(rawPhotos)).map((url) => {
+    const cleanPhotos = Array.from(new Set(rawPhotos)).map((url) => {
     if (url.includes("drive.google.com")) {
       const fileId = url.match(/\/d\/(.+?)\//)?.[1] || url.match(/id=(.+?)(&|$)/)?.[1];
+      // Fixed: Added the $ sign before the curly braces
       return fileId ? `https://lh3.googleusercontent.com/d/${fileId}` : url;
     }
     return url;
@@ -381,8 +382,40 @@ async function buildInventorySubset(chatId, inventory, userMessage) {
 
 // ----------------- OpenAI + GreenAPI -----------------
 async function sendWhatsAppMessage(chatId, message) {
-  const url = `https://api.greenapi.com/waInstance${GREEN_API_ID}/sendMessage/${GREEN_API_TOKEN}`;
-  await axios.post(url, { chatId, message }, { timeout: 20000 });
+  try {
+    // Split the message into lines and clean spaces
+    const lines = String(message || "").trim().split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+    
+    // Check if a line is a pure URL
+    const urlPattern = /^https?:\/\/\S+$/i;
+    const urls = lines.filter(x => urlPattern.test(x));
+
+    // If EVERY line is a URL, treat it as a gallery
+    const isOnlyUrls = urls.length > 0 && urls.length === lines.length;
+
+    if (isOnlyUrls) {
+      for (const url of urls.slice(0, 5)) { // Limit to 5 photos to avoid spam
+        const fileUrl = `https://api.greenapi.com/waInstance${GREEN_API_ID}/sendFileByUrl/${GREEN_API_TOKEN}`;
+        await axios.post(
+          fileUrl,
+          { 
+            chatId, 
+            urlFile: url, 
+            fileName: "car_photo.jpg" 
+          },
+          { timeout: 20000 }
+        );
+      }
+      return; // Exit after sending photos
+    }
+
+    // Default: Send as normal text message
+    const textUrl = `https://api.greenapi.com/waInstance${GREEN_API_ID}/sendMessage/${GREEN_API_TOKEN}`;
+    await axios.post(textUrl, { chatId, message }, { timeout: 20000 });
+    
+  } catch (error) {
+    console.error("❌ Error in sendWhatsAppMessage:", error.message);
+  }
 }
 
 function detectLanguage(text) {
