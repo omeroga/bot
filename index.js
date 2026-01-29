@@ -28,6 +28,16 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
 // ----------------- Multi-client inventory cache (per sheetUrl) -----------------
 const inventoryCaches = {};
 const INVENTORY_TTL_MS = 60 * 1000;
+// Background task to clear old caches every 24 hours
+setInterval(() => {
+  const now = Date.now();
+  for (const sheetUrl in inventoryCaches) {
+    if (now - inventoryCaches[sheetUrl].ts > 24 * 60 * 60 * 1000) {
+      delete inventoryCaches[sheetUrl];
+      console.log(`🗑️ Cache cleared for: ${sheetUrl}`);
+    }
+  }
+}, 24 * 60 * 60 * 1000);
 
 // ----------------- Robust CSV parse -----------------
 function parseCsvLine(line) {
@@ -361,20 +371,22 @@ async function getCandidates(chatId) {
 // ----------------- Subset builder -----------------
 async function buildInventorySubset(chatId, inventory, userMessage) {
   const wantsPhotos = isAskingForPhotos(userMessage);
+  const memory = await getLastMessages(chatId, 5);
+  const fullContext = memory.map(m => m.content).join(" ") + " " + userMessage;
 
   if (wantsPhotos) {
     const last = await getCandidates(chatId);
-    const lastWithPhotos = (last || []).filter((c) => c.photos && c.photos.length);
-    if (lastWithPhotos.length) return lastWithPhotos.slice(0, 2);
+    if (last.length > 0) return last;
 
     const withPhotos = inventory.filter((c) => c.photos && c.photos.length);
-    return (withPhotos.length ? withPhotos : inventory).slice(0, 2);
+    const ranked = pickCandidates(withPhotos.length ? withPhotos : inventory, fullContext);
+    return ranked.slice(0, 3);
   }
 
-  const ranked = pickCandidates(inventory, userMessage);
+  const ranked = pickCandidates(inventory, fullContext);
   const top = ranked.slice(0, 8);
 
-  await setCandidates(chatId, top.slice(0, 3));
+  await setCandidates(chatId, top.slice(0, 5));
   return top;
 }
 
@@ -461,31 +473,61 @@ app.post("/webhook", async (req, res) => {
       }
     );
 
-        const reply = String(aiResp?.data?.choices?.[0]?.message?.content || "").trim();
+            let reply = String(aiResp?.data?.choices?.[0]?.message?.content || "").trim();
 
-    if (reply.includes("SEND_PHOTOS_NOW")) {
-      const car = inventorySubset[0]; 
+    if (reply.includes("HOT_LEAD_DETECTED")) {
+      reply = reply.replace("HOT_LEAD_DETECTED", "").trim();
+
+      if (client.agentPhone) {
+        const agentUrl = `https://api.greenapi.com/waInstance${GREEN_API_ID}/sendMessage/${GREEN_API_TOKEN}`;
+        const agentMsg = `🔥 *HOT LEAD DETECTED*\nCustomer: ${chatId.split('@')[0]}\nStatus: High Interest / Negotiation\n(Check chat for takeover)`;
+        
+        axios.post(agentUrl, { chatId: client.agentPhone, message: agentMsg })
+          .catch(e => console.error("Agent Notification Error:", e.message));
+      }
+    }
+
+            if (reply.includes("SEND_PHOTOS_NOW")) {
+      const parts = reply.split(" ");
+      const carId = parts.length > 1 ? parts[1].trim() : null;
+      
+      let car = inventory.find(c => c.id === carId);
+      if (!car) car = inventorySubset[0];
+
       if (car && car.photos && car.photos.length) {
-        for (const url of car.photos.slice(0, 5)) {
+        const photoLimit = client.maxPhotos || 5; 
+        for (const url of car.photos.slice(0, photoLimit)) {
           const fileUrl = `https://api.greenapi.com/waInstance${GREEN_API_ID}/sendFileByUrl/${GREEN_API_TOKEN}`;
           await axios.post(fileUrl, {
             chatId,
             urlFile: url,
-            fileName: "car_photo.jpg"
-          }, { timeout: 20000 });
+            fileName: `${car.model || 'car'}.jpg`
+          }, { timeout: 20000 }).catch(e => console.error("Photo Error:", e.message));
         }
       }
-      await addMessage(chatId, "assistant", "Sent photos to user.");
-    } else {
-      await sendWhatsAppMessage(chatId, reply);
-      await addMessage(chatId, "assistant", reply);
+      await addMessage(chatId, "assistant", `Sent photos for ${car?.model || 'car'}`);
+      return res.sendStatus(200);
     }
 
-    await addMessage(chatId, "user", msg);
-    return res.sendStatus(200);
     
-  } catch (e) {
+    } catch (e) {
     console.error("❌ Webhook Error:", e.message);
+    
+    try {
+      const data = req.body;
+      const chatId = data?.senderData?.chatId || data?.chatId;
+      
+      if (chatId) {
+        const errorUrl = `https://api.greenapi.com/waInstance${GREEN_API_ID}/sendMessage/${GREEN_API_TOKEN}`;
+        await axios.post(errorUrl, { 
+          chatId, 
+          message: "Disculpa, tuve un problemita técnico. ¿Me podrías repetir lo último?" 
+        });
+      }
+    } catch (sendErr) {
+      console.error("❌ Failed to send fallback message:", sendErr.message);
+    }
+
     return res.sendStatus(500);
   }
 });
