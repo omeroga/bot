@@ -440,10 +440,16 @@ app.post("/webhook", async (req, res) => {
     const data = req.body;
     const chatId = data?.senderData?.chatId || data?.chatId;
 
-    // 1. זהוי הודעה ידנית ממך (Human Takeover)
+        // 1. זהוי הודעה ידנית ממך (Human Takeover)
     if (data?.typeWebhook === "outgoingMessageReceived" || data?.typeWebhook === "outgoingAPIMessageReceived") {
       if (data?.sendByApi === false && chatId) {
-        const hours = 3; 
+        // שליפת נתוני הלקוח כדי לבדוק אם מוגדר לו זמן אישי
+        const client = getClientByChatId(chatId);
+        
+        // כאן מתבצע ה-Fallback: 
+        // אם מוגדר takeoverHours בקליינט - נשתמש בו. אם לא - נשתמש ב-3.
+        const hours = client?.takeoverHours || 3; 
+        
         const until = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
         
         await supabase
@@ -451,8 +457,7 @@ app.post("/webhook", async (req, res) => {
           .update({ takeover_until: until })
           .eq("chat_id", chatId);
           
-        console.log(`👤 Human takeover activated for ${chatId} until ${until}`);
-        
+        console.log(`👤 Human takeover activated for ${chatId} for ${hours} hours (until ${until})`);
       }
       return res.sendStatus(200);
     }

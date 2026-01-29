@@ -1,8 +1,8 @@
 const CLIENTS = {
   "50231390807@c.us": {
     name: "Omer",
-    sheetUrl:
-      "https://docs.google.com/spreadsheets/d/1LUpyB8N-63EVOFCmzrolCm3mR0Mr6g8hAqtf7SfkUug/export?format=csv",
+    takeoverHours: 3,
+    sheetUrl: "https://docs.google.com/spreadsheets/d/1LUpyB8N-63EVOFCmzrolCm3mR0Mr6g8hAqtf7SfkUug/export?format=csv",
     systemPrompt: `
 You are a real human car salesman in Guatemala.
 
