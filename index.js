@@ -429,7 +429,7 @@ function detectLanguage(text) {
   return e > s ? "en" : "es";
 }
 
-// ----------------- Webhook -----------------
+// ----------------- Webhook with Takeover Logic -----------------
 app.post("/webhook", async (req, res) => {
   try {
     if (!OPENAI_API_KEY || !GREEN_API_ID || !GREEN_API_TOKEN || !SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
@@ -438,17 +438,46 @@ app.post("/webhook", async (req, res) => {
     }
 
     const data = req.body;
+    const chatId = data?.senderData?.chatId || data?.chatId;
+
+    // 1. זהוי הודעה ידנית ממך (Human Takeover)
+    if (data?.typeWebhook === "outgoingMessageReceived" || data?.typeWebhook === "outgoingAPIMessageReceived") {
+      if (data?.sendByApi === false && chatId) {
+        const hours = 3; 
+        const until = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
+        
+        await supabase
+          .from("chat_sessions")
+          .update({ takeover_until: until })
+          .eq("chat_id", chatId);
+          
+        console.log(`👤 Human takeover activated for ${chatId} until ${until}`);
+        
+      }
+      return res.sendStatus(200);
+    }
+
+    // 2. טיפול בהודעה נכנסת מהלקוח
     if (data?.typeWebhook !== "incomingMessageReceived") return res.sendStatus(200);
 
-    const chatId = data?.senderData?.chatId;
     const userMessage = data?.messageData?.textMessageData?.textMessage;
     if (!chatId || !userMessage) return res.sendStatus(200);
 
-    // Ignore groups
+    // התעלמות מקבוצות ומלקוחות לא מורשים
     if (String(chatId).endsWith("@g.us")) return res.sendStatus(200);
-
-    // Allow only configured clients (MVP: only you)
     if (!isAllowedChatId(chatId)) return res.sendStatus(200);
+
+    // 3. בדיקה אם הבוט בהשתקה (Takeover פעיל)
+    const { data: sessionData } = await supabase
+      .from("chat_sessions")
+      .select("takeover_until")
+      .eq("chat_id", chatId)
+      .single();
+
+    if (sessionData?.takeover_until && new Date(sessionData.takeover_until) > new Date()) {
+      console.log(`🤫 Bot is silenced for ${chatId} due to human takeover.`);
+      return res.sendStatus(200);
+    }
 
     const client = getClientByChatId(chatId);
     if (!client) return res.sendStatus(200);
@@ -460,7 +489,6 @@ app.post("/webhook", async (req, res) => {
     await ensureSession(chatId, lang);
 
     const memory = await getLastMessages(chatId, 12);
-
     const inventory = await loadInventoryBySheetUrl(client.sheetUrl);
     const inventorySubset = await buildInventorySubset(chatId, inventory, msg);
 
@@ -484,9 +512,8 @@ ${JSON.stringify(inventorySubset)}
       }
     );
 
-    const reply =
-      String(aiResp?.data?.choices?.[0]?.message?.content || "").trim() ||
-      "Con gusto, ¿qué tipo de carro buscás y más o menos en qué presupuesto?";
+    const reply = String(aiResp?.data?.choices?.[0]?.message?.content || "").trim() ||
+      "Con gusto, ¿qué tipo de carro buscás?";
 
     await sendWhatsAppMessage(chatId, reply);
 
@@ -495,10 +522,7 @@ ${JSON.stringify(inventorySubset)}
 
     return res.sendStatus(200);
   } catch (e) {
-    const status = e?.response?.status;
-    const body = e?.response?.data;
-    console.error("❌ Error:", status || e.message);
-    if (body) console.error("❌ Error Body:", JSON.stringify(body));
+    console.error("❌ Webhook Error:", e.message);
     return res.sendStatus(500);
   }
 });
