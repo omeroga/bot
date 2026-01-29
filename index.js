@@ -170,10 +170,9 @@ function slimCarRow(rawRow, fieldKeys) {
     details[k] = v;
   }
 
-    const cleanPhotos = Array.from(new Set(rawPhotos)).map((url) => {
-    if (url.includes("drive.google.com")) {
+  const cleanPhotos = Array.from(new Set(rawPhotos)).map((url) => {
+        if (url.includes("drive.google.com")) {
       const fileId = url.match(/\/d\/(.+?)\//)?.[1] || url.match(/id=(.+?)(&|$)/)?.[1];
-      // Fixed: Added the $ sign before the curly braces
       return fileId ? `https://lh3.googleusercontent.com/d/${fileId}` : url;
     }
     return url;
@@ -247,7 +246,6 @@ function extractBudget(text) {
 function detectType(text) {
   const t = (text || "").toLowerCase();
 
-  // Minimal: keep only generic words - no model names
   if (t.includes("pickup") || t.includes("pick up")) return "pickup";
   if (t.includes("suv") || t.includes("camioneta")) return "suv";
   if (t.includes("sedan") || t.includes("sedán")) return "sedan";
@@ -384,31 +382,10 @@ async function buildInventorySubset(chatId, inventory, userMessage) {
 async function sendWhatsAppMessage(chatId, message) {
   try {
     const text = String(message || "").trim();
+    if (!text || text === "SEND_PHOTOS_NOW") return; 
 
-    // 1. קודם כל שולח את הודעת הטקסט (הסברים + לינקים)
     const textUrl = `https://api.greenapi.com/waInstance${GREEN_API_ID}/sendMessage/${GREEN_API_TOKEN}`;
     await axios.post(textUrl, { chatId, message: text }, { timeout: 20000 });
-
-    // 2. מוציא את הלינקים של התמונות ושולח אותן כקבצים ויזואליים
-    const urls = text.match(/https?:\/\/\S+/gi) || [];
-    const imageUrls = urls.filter((u) => 
-      /lh3\.googleusercontent\.com|drive\.google\.com|jpg|jpeg|png/i.test(u)
-    );
-
-    if (imageUrls.length > 0) {
-      for (const url of imageUrls.slice(0, 5)) {
-        const fileUrl = `https://api.greenapi.com/waInstance${GREEN_API_ID}/sendFileByUrl/${GREEN_API_TOKEN}`;
-        await axios.post(
-          fileUrl,
-          {
-            chatId,
-            urlFile: url,
-            fileName: "car_photo.jpg"
-          },
-          { timeout: 20000 }
-        );
-      }
-    }
   } catch (err) {
     console.error("❌ sendWhatsAppMessage error:", err.message);
   }
@@ -417,12 +394,7 @@ async function sendWhatsAppMessage(chatId, message) {
 function detectLanguage(text) {
   const t = (text || "").toLowerCase();
   if (/[\u0590-\u05FF]/.test(t)) return "he";
-  const spanishHints = ["hola", "precio", "fotos", "tenes", "tenés", "carro", "camioneta", "cuanto", "cuánto", "financ"];
-  const englishHints = ["hi", "price", "photos", "available", "how much", "finance"];
-  let s = 0, e = 0;
-  for (const w of spanishHints) if (t.includes(w)) s++;
-  for (const w of englishHints) if (t.includes(w)) e++;
-  return e > s ? "en" : "es";
+  return "es";
 }
 
 // ----------------- Webhook with Takeover Logic -----------------
@@ -436,47 +408,28 @@ app.post("/webhook", async (req, res) => {
     const data = req.body;
     const chatId = data?.senderData?.chatId || data?.chatId;
 
-        // 1. זהוי הודעה ידנית ממך (Human Takeover)
-    if (data?.typeWebhook === "outgoingMessageReceived" || data?.typeWebhook === "outgoingAPIMessageReceived") {
-      if (data?.sendByApi === false && chatId) {
-        // שליפת נתוני הלקוח כדי לבדוק אם מוגדר לו זמן אישי
-        const client = getClientByChatId(chatId);
-        
-        // כאן מתבצע ה-Fallback: 
-        // אם מוגדר takeoverHours בקליינט - נשתמש בו. אם לא - נשתמש ב-3.
-        const hours = client?.takeoverHours || 3; 
-        
-        const until = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
-        
-        await supabase
-          .from("chat_sessions")
-          .update({ takeover_until: until })
-          .eq("chat_id", chatId);
-          
-        console.log(`👤 Human takeover activated for ${chatId} for ${hours} hours (until ${until})`);
-      }
+    // 1. Human Takeover Detection
+    if (data?.typeWebhook?.includes("outgoing") && data?.sendByApi === false && chatId) {
+      const client = getClientByChatId(chatId);
+      const hours = client?.takeoverHours || 3; 
+      const until = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
+      await supabase.from("chat_sessions").update({ takeover_until: until }).eq("chat_id", chatId);
+      console.log(`👤 Human takeover for ${chatId} until ${until}`);
       return res.sendStatus(200);
     }
 
-    // 2. טיפול בהודעה נכנסת מהלקוח
+    // 2. Incoming message processing
     if (data?.typeWebhook !== "incomingMessageReceived") return res.sendStatus(200);
 
     const userMessage = data?.messageData?.textMessageData?.textMessage;
     if (!chatId || !userMessage) return res.sendStatus(200);
 
-    // התעלמות מקבוצות ומלקוחות לא מורשים
     if (String(chatId).endsWith("@g.us")) return res.sendStatus(200);
     if (!isAllowedChatId(chatId)) return res.sendStatus(200);
 
-    // 3. בדיקה אם הבוט בהשתקה (Takeover פעיל)
-    const { data: sessionData } = await supabase
-      .from("chat_sessions")
-      .select("takeover_until")
-      .eq("chat_id", chatId)
-      .single();
-
+    // 3. Silence Check
+    const { data: sessionData } = await supabase.from("chat_sessions").select("takeover_until").eq("chat_id", chatId).single();
     if (sessionData?.takeover_until && new Date(sessionData.takeover_until) > new Date()) {
-      console.log(`🤫 Bot is silenced for ${chatId} due to human takeover.`);
       return res.sendStatus(200);
     }
 
@@ -493,12 +446,7 @@ app.post("/webhook", async (req, res) => {
     const inventory = await loadInventoryBySheetUrl(client.sheetUrl);
     const inventorySubset = await buildInventorySubset(chatId, inventory, msg);
 
-    const system = `
-${client.systemPrompt}
-
-Inventory available right now:
-${JSON.stringify(inventorySubset)}
-`.trim();
+    const system = `${client.systemPrompt}\nInventory available right now:\n${JSON.stringify(inventorySubset)}`.trim();
 
     const aiResp = await axios.post(
       "https://api.openai.com/v1/chat/completions",
@@ -513,15 +461,29 @@ ${JSON.stringify(inventorySubset)}
       }
     );
 
-    const reply = String(aiResp?.data?.choices?.[0]?.message?.content || "").trim() ||
-      "Con gusto, ¿qué tipo de carro buscás?";
+        const reply = String(aiResp?.data?.choices?.[0]?.message?.content || "").trim();
 
-    await sendWhatsAppMessage(chatId, reply);
+    if (reply.includes("SEND_PHOTOS_NOW")) {
+      const car = inventorySubset[0]; 
+      if (car && car.photos && car.photos.length) {
+        for (const url of car.photos.slice(0, 5)) {
+          const fileUrl = `https://api.greenapi.com/waInstance${GREEN_API_ID}/sendFileByUrl/${GREEN_API_TOKEN}`;
+          await axios.post(fileUrl, {
+            chatId,
+            urlFile: url,
+            fileName: "car_photo.jpg"
+          }, { timeout: 20000 });
+        }
+      }
+      await addMessage(chatId, "assistant", "Sent photos to user.");
+    } else {
+      await sendWhatsAppMessage(chatId, reply);
+      await addMessage(chatId, "assistant", reply);
+    }
 
     await addMessage(chatId, "user", msg);
-    await addMessage(chatId, "assistant", reply);
-
     return res.sendStatus(200);
+    
   } catch (e) {
     console.error("❌ Webhook Error:", e.message);
     return res.sendStatus(500);
