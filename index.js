@@ -1,7 +1,7 @@
-const ALLOWED_CHAT_ID = "50231390807@c.us";
 const express = require("express");
 const axios = require("axios");
 const { createClient } = require("@supabase/supabase-js");
+const { getClientByChatId, isAllowedChatId } = require("./clients");
 
 const app = express();
 app.use(express.json());
@@ -9,12 +9,8 @@ app.use(express.json());
 const GREEN_API_ID = (process.env.GREEN_API_ID || "").trim();
 const GREEN_API_TOKEN = (process.env.GREEN_API_TOKEN || "").trim();
 const OPENAI_API_KEY = (process.env.OPENAI_API_KEY || "").trim();
-
 const SUPABASE_URL = (process.env.SUPABASE_URL || "").trim();
 const SUPABASE_SERVICE_ROLE_KEY = (process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
-
-const SHEET_URL =
-  "https://docs.google.com/spreadsheets/d/1LUpyB8N-63EVOFCmzrolCm3mR0Mr6g8hAqtf7SfkUug/export?format=csv";
 
 function assertEnv() {
   if (!GREEN_API_ID) console.error("❌ CRITICAL: GREEN_API_ID is missing");
@@ -29,8 +25,8 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
 });
 
-// ----------------- Inventory cache -----------------
-let inventoryCache = { ts: 0, rows: [] };
+// ----------------- Multi-client inventory cache (per sheetUrl) -----------------
+const inventoryCaches = {};
 const INVENTORY_TTL_MS = 60 * 1000;
 
 // ----------------- Robust CSV parse -----------------
@@ -174,17 +170,20 @@ function slimCarRow(rawRow, fieldKeys) {
     details[k] = v;
   }
 
-  const cleanPhotos = Array.from(new Set(rawPhotos)).map(url => {
-    if (url.includes('drive.google.com')) {
-    const fileId = url.match(/\/d\/(.+?)\//)?.[1] || url.match(/id=(.+?)(&|$)/)?.[1];
-    return fileId ? `https://lh3.googleusercontent.com/d/${fileId}` : url;
+  const cleanPhotos = Array.from(new Set(rawPhotos)).map((url) => {
+    if (url.includes("drive.google.com")) {
+      const fileId = url.match(/\/d\/(.+?)\//)?.[1] || url.match(/id=(.+?)(&|$)/)?.[1];
+      return fileId ? `https://lh3.googleusercontent.com/d/${fileId}` : url;
     }
     return url;
   });
 
   const car = {
     id: hashId(`${brand}|${model}|${year}|${price}`),
-    brand, model, year, price,
+    brand,
+    model,
+    year,
+    price,
     photos: cleanPhotos,
     details,
   };
@@ -193,11 +192,13 @@ function slimCarRow(rawRow, fieldKeys) {
   return car;
 }
 
-async function loadInventory() {
+async function loadInventoryBySheetUrl(sheetUrl) {
   const t = Date.now();
-  if (inventoryCache.rows.length && t - inventoryCache.ts < INVENTORY_TTL_MS) return inventoryCache.rows;
+  const cache = inventoryCaches[sheetUrl];
 
-  const sheetRes = await axios.get(SHEET_URL, { timeout: 20000 });
+  if (cache?.rows?.length && t - cache.ts < INVENTORY_TTL_MS) return cache.rows;
+
+  const sheetRes = await axios.get(sheetUrl, { timeout: 20000 });
   const csv = String(sheetRes.data || "");
 
   const lines = csv
@@ -206,7 +207,7 @@ async function loadInventory() {
     .filter(Boolean);
 
   if (lines.length < 2) {
-    inventoryCache = { ts: t, rows: [] };
+    inventoryCaches[sheetUrl] = { ts: t, rows: [] };
     return [];
   }
 
@@ -221,7 +222,7 @@ async function loadInventory() {
     rows.push(slimCarRow(raw, fieldKeys));
   }
 
-  inventoryCache = { ts: t, rows };
+  inventoryCaches[sheetUrl] = { ts: t, rows };
   return rows;
 }
 
@@ -244,13 +245,13 @@ function extractBudget(text) {
 
 function detectType(text) {
   const t = (text || "").toLowerCase();
-  const rules = [
-    { type: "pickup", hints: ["pickup", "pick up", "hilux", "ranger", "tacoma", "frontier", "l200", "dmax", "d-max", "bt-50"] },
-    { type: "suv", hints: ["suv", "camioneta", "4runner", "prado", "rav4", "cr-v", "crv", "cx-5", "x-trail", "xtrail", "tucson", "santa fe"] },
-    { type: "sedan", hints: ["sedan", "sedán", "corolla", "civic", "sentra", "elantra", "accord", "camry"] },
-    { type: "hatchback", hints: ["hatchback", "hatch", "yaris", "picanto", "rio hatch"] },
-  ];
-  for (const r of rules) if (r.hints.some((h) => t.includes(h))) return r.type;
+
+  // Minimal: keep only generic words - no model names
+  if (t.includes("pickup") || t.includes("pick up")) return "pickup";
+  if (t.includes("suv") || t.includes("camioneta")) return "suv";
+  if (t.includes("sedan") || t.includes("sedán")) return "sedan";
+  if (t.includes("hatchback") || t.includes("hatch")) return "hatchback";
+
   return null;
 }
 
@@ -274,7 +275,6 @@ function scoreCar(car, intent) {
   const text = car.searchableText || "";
 
   if (intent.type && text.includes(intent.type)) score += 6;
-
   for (const kw of intent.keywords) if (text.includes(kw)) score += 4;
 
   const yearNum = parseNumberLoose(car.year);
@@ -289,7 +289,6 @@ function scoreCar(car, intent) {
   }
 
   if (car.photos && car.photos.length) score += 1;
-
   return score;
 }
 
@@ -305,7 +304,7 @@ function pickCandidates(inventory, userMessage) {
     .sort((a, b) => b.score - a.score)
     .map((x) => x.car);
 
-  return { intent, ranked };
+  return ranked;
 }
 
 // ----------------- Supabase memory functions -----------------
@@ -324,24 +323,19 @@ async function getLastMessages(chatId, limit = 12) {
     .limit(limit);
 
   if (error) throw error;
-  const msgs = (data || [])
-    .slice()
-    .reverse()
-    .map((m) => ({ role: m.role, content: m.content }));
-  return msgs;
+  return (data || []).slice().reverse().map((m) => ({ role: m.role, content: m.content }));
 }
 
 async function addMessage(chatId, role, content) {
   const { error } = await supabase.from("chat_messages").insert({ chat_id: chatId, role, content });
   if (error) throw error;
 
-  // Trim old messages to keep only last 12 (hard cap)
   const { data: ids, error: e2 } = await supabase
     .from("chat_messages")
     .select("id")
     .eq("chat_id", chatId)
     .order("created_at", { ascending: false })
-    .range(12, 200); // everything older than first 12
+    .range(12, 200);
 
   if (e2) throw e2;
   if (ids && ids.length) {
@@ -378,12 +372,10 @@ async function buildInventorySubset(chatId, inventory, userMessage) {
     return (withPhotos.length ? withPhotos : inventory).slice(0, 2);
   }
 
-  const { ranked } = pickCandidates(inventory, userMessage);
+  const ranked = pickCandidates(inventory, userMessage);
   const top = ranked.slice(0, 8);
 
-  // store top 3 for continuity
   await setCandidates(chatId, top.slice(0, 3));
-
   return top;
 }
 
@@ -404,6 +396,7 @@ function detectLanguage(text) {
   return e > s ? "en" : "es";
 }
 
+// ----------------- Webhook -----------------
 app.post("/webhook", async (req, res) => {
   try {
     if (!OPENAI_API_KEY || !GREEN_API_ID || !GREEN_API_TOKEN || !SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
@@ -416,84 +409,30 @@ app.post("/webhook", async (req, res) => {
 
     const chatId = data?.senderData?.chatId;
     const userMessage = data?.messageData?.textMessageData?.textMessage;
-
     if (!chatId || !userMessage) return res.sendStatus(200);
 
-    // 🔒 לאפשר תגובה רק למספר שלך
-    if (chatId !== "50231390807@c.us") {
-    return res.sendStatus(200);
-}
-    // optional: ignore groups
+    // Ignore groups
     if (String(chatId).endsWith("@g.us")) return res.sendStatus(200);
+
+    // Allow only configured clients (MVP: only you)
+    if (!isAllowedChatId(chatId)) return res.sendStatus(200);
+
+    const client = getClientByChatId(chatId);
+    if (!client) return res.sendStatus(200);
 
     const msg = String(userMessage).trim();
     if (!msg) return res.sendStatus(200);
 
     const lang = detectLanguage(msg);
-
     await ensureSession(chatId, lang);
 
     const memory = await getLastMessages(chatId, 12);
 
-    const inventory = await loadInventory();
+    const inventory = await loadInventoryBySheetUrl(client.sheetUrl);
     const inventorySubset = await buildInventorySubset(chatId, inventory, msg);
 
     const system = `
-You are a real human car salesman in Guatemala.
-
-You do NOT talk like a bot.
-You do NOT sound excited or exaggerated.
-You do NOT use many exclamation marks.
-You do NOT repeat yourself.
-
-Your tone:
-- calm
-- confident
-- friendly
-- short sentences
-- like someone answering WhatsApp messages naturally
-
-You speak Spanish from Guatemala, softly and naturally.
-Use light local expressions only when they fit the moment:
-"mira", "fijo", "con gusto", "te cuento", "dale".
-Never overuse slang.
-
-Conversation behavior:
-- Always answer exactly what the client asked.
-- Do not change the topic.
-- Do not add extra information unless it helps the answer.
-- If the question is yes/no, answer yes or no first.
-- Then add one short sentence of context if needed.
-
-You never write long messages.
-2–4 short lines maximum.
-
-If the client asks about a specific detail:
-- answer only that detail using details{}.
-- do not talk about other cars.
-
-If the client asks what is available:
-- mention at most 2–3 options.
-- very short summary only.
-
-If the client asks for photos:
-- send only the photo URLs.
-- no explanations before or after.
-
-You are not trying to impress.
-You are trying to sound normal and trustworthy.
-
-After some conversation, you may suggest meeting or test drive naturally,
-only if it makes sense in context.
-
-Language handling:
-- If the user writes in Hebrew, respond in Hebrew.
-- If the user writes in English, respond in English.
-- Otherwise respond in Spanish (Guatemala).
-
-Inventory data is always correct.
-Never invent information.
-Only use what exists in the inventory.
+${client.systemPrompt}
 
 Inventory available right now:
 ${JSON.stringify(inventorySubset)}
