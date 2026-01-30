@@ -420,7 +420,7 @@ app.post("/webhook", async (req, res) => {
     const data = req.body;
     const chatId = data?.senderData?.chatId || data?.chatId;
 
-    // 1. Human Takeover Detection
+    // 1. Human Takeover Detection (שומר על השורות המקוריות שלך)
     if (data?.typeWebhook?.includes("outgoing") && data?.sendByApi === false && chatId) {
       const client = getClientByChatId(chatId);
       const hours = client?.takeoverHours || 3; 
@@ -473,18 +473,18 @@ app.post("/webhook", async (req, res) => {
       }
     );
 
-        const rawReply = String(aiResp?.data?.choices?.[0]?.message?.content || "").trim();
+    const rawReply = String(aiResp?.data?.choices?.[0]?.message?.content || "").trim();
     const isHotLead = rawReply.includes("HOT_LEAD_DETECTED");
     const reply = humanizeReply(rawReply);
 
-    // 1. Agent Notification
+    // 4. Agent Notification
     if (isHotLead && client.agentPhone) {
       const agentUrl = `https://api.greenapi.com/waInstance${GREEN_API_ID}/sendMessage/${GREEN_API_TOKEN}`;
       const agentMsg = `🔥 *HOT LEAD DETECTED*\nCustomer: ${chatId.split('@')[0]}`;
       axios.post(agentUrl, { chatId: client.agentPhone, message: agentMsg }).catch(e => {});
     }
 
-    // 2. Main Logic: Send Photos OR Text
+    // 5. Main Logic: Send Photos OR Text
     if (rawReply.toUpperCase().includes("SEND_PHOTOS_NOW")) {
       const parts = rawReply.split(" ");
       const carId = parts.length > 1 ? parts[1].trim() : null;
@@ -505,15 +505,10 @@ app.post("/webhook", async (req, res) => {
     await addMessage(chatId, "user", msg);
     return res.sendStatus(200);
 
-    await addMessage(chatId, "user", msg);
-    return res.sendStatus(200);
-    
   } catch (e) {
     console.error("❌ Webhook Error:", e.message);
-    
     try {
-      const data = req.body;
-      const currentChatId = data?.senderData?.chatId || data?.chatId;
+      const currentChatId = req.body?.senderData?.chatId || req.body?.chatId;
       if (currentChatId) {
         const errorUrl = `https://api.greenapi.com/waInstance${GREEN_API_ID}/sendMessage/${GREEN_API_TOKEN}`;
         await axios.post(errorUrl, { 
@@ -533,13 +528,11 @@ app.listen(process.env.PORT || 3000, () => console.log("Server running"));
 function humanizeReply(text) {
   if (!text) return text;
   let t = text.trim();
-
   t = t.replace(/HOT_LEAD_DETECTED/g, "").trim();
   t = t.replace(/(¿te interesa.*|¿quieres.*|¿deseas.*|¿en qué.*|¿te parece.*)$/i, "");
   t = t.replace(/(estoy aquí.*|con gusto.*|avísame.*|decime.*)$/i, "");
   t = t.replace(/\?{2,}/g, "?").trim();
   const lines = t.split("\n").map(l => l.trim()).filter(Boolean);
   t = lines.slice(0, 2).join("\n");
-
   return t.trim();
 }
