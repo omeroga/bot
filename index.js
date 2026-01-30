@@ -487,7 +487,7 @@ app.post("/webhook", async (req, res) => {
       }
     }
 
-            if (reply.includes("SEND_PHOTOS_NOW")) {
+               if (reply.includes("SEND_PHOTOS_NOW")) {
       const parts = reply.split(" ");
       const carId = parts.length > 1 ? parts[1].trim() : null;
       
@@ -507,27 +507,31 @@ app.post("/webhook", async (req, res) => {
       }
       await addMessage(chatId, "assistant", `Sent photos for ${car?.model || 'car'}`);
       return res.sendStatus(200);
+    } else {
+      // This is the part that was missing/broken
+      await sendWhatsAppMessage(chatId, reply);
+      await addMessage(chatId, "assistant", reply);
     }
 
+    await addMessage(chatId, "user", msg);
+    return res.sendStatus(200);
     
-    } catch (e) {
+  } catch (e) {
     console.error("❌ Webhook Error:", e.message);
     
     try {
       const data = req.body;
-      const chatId = data?.senderData?.chatId || data?.chatId;
-      
-      if (chatId) {
+      const currentChatId = data?.senderData?.chatId || data?.chatId;
+      if (currentChatId) {
         const errorUrl = `https://api.greenapi.com/waInstance${GREEN_API_ID}/sendMessage/${GREEN_API_TOKEN}`;
         await axios.post(errorUrl, { 
-          chatId, 
+          chatId: currentChatId, 
           message: "Disculpa, tuve un problemita técnico. ¿Me podrías repetir lo último?" 
         });
       }
     } catch (sendErr) {
       console.error("❌ Failed to send fallback message:", sendErr.message);
     }
-
     return res.sendStatus(500);
   }
 });
