@@ -464,7 +464,7 @@ app.post("/webhook", async (req, res) => {
       "https://api.openai.com/v1/chat/completions",
       {
         model: "gpt-4o-mini",
-        temperature: 0.7,
+        temperature: 0.4,
         messages: [{ role: "system", content: system }, ...memory, { role: "user", content: msg }],
       },
       {
@@ -473,45 +473,37 @@ app.post("/webhook", async (req, res) => {
       }
     );
 
-            let reply = String(aiResp?.data?.choices?.[0]?.message?.content || "").trim();
+        const rawReply = String(aiResp?.data?.choices?.[0]?.message?.content || "").trim();
+    const isHotLead = rawReply.includes("HOT_LEAD_DETECTED");
+    const reply = humanizeReply(rawReply);
 
-    if (reply.includes("HOT_LEAD_DETECTED")) {
-      reply = reply.replace("HOT_LEAD_DETECTED", "").trim();
-
-      if (client.agentPhone) {
-        const agentUrl = `https://api.greenapi.com/waInstance${GREEN_API_ID}/sendMessage/${GREEN_API_TOKEN}`;
-        const agentMsg = `🔥 *HOT LEAD DETECTED*\nCustomer: ${chatId.split('@')[0]}\nStatus: High Interest / Negotiation\n(Check chat for takeover)`;
-        
-        axios.post(agentUrl, { chatId: client.agentPhone, message: agentMsg })
-          .catch(e => console.error("Agent Notification Error:", e.message));
-      }
+    // 1. Agent Notification
+    if (isHotLead && client.agentPhone) {
+      const agentUrl = `https://api.greenapi.com/waInstance${GREEN_API_ID}/sendMessage/${GREEN_API_TOKEN}`;
+      const agentMsg = `🔥 *HOT LEAD DETECTED*\nCustomer: ${chatId.split('@')[0]}`;
+      axios.post(agentUrl, { chatId: client.agentPhone, message: agentMsg }).catch(e => {});
     }
 
-               if (reply.includes("SEND_PHOTOS_NOW")) {
-      const parts = reply.split(" ");
+    // 2. Main Logic: Send Photos OR Text
+    if (rawReply.toUpperCase().includes("SEND_PHOTOS_NOW")) {
+      const parts = rawReply.split(" ");
       const carId = parts.length > 1 ? parts[1].trim() : null;
-      
-      let car = inventory.find(c => c.id === carId);
-      if (!car) car = inventorySubset[0];
+      let car = inventory.find(c => c.id === carId) || inventorySubset[0];
 
-      if (car && car.photos && car.photos.length) {
-        const photoLimit = client.maxPhotos || 5; 
-        for (const url of car.photos.slice(0, photoLimit)) {
+      if (car?.photos?.length) {
+        for (const url of car.photos.slice(0, client.maxPhotos || 5)) {
           const fileUrl = `https://api.greenapi.com/waInstance${GREEN_API_ID}/sendFileByUrl/${GREEN_API_TOKEN}`;
-          await axios.post(fileUrl, {
-            chatId,
-            urlFile: url,
-            fileName: `${car.model || 'car'}.jpg`
-          }, { timeout: 20000 }).catch(e => console.error("Photo Error:", e.message));
+          await axios.post(fileUrl, { chatId, urlFile: url, fileName: "car.jpg" }).catch(e => {});
         }
       }
       await addMessage(chatId, "assistant", `Sent photos for ${car?.model || 'car'}`);
-      return res.sendStatus(200);
     } else {
-      // This is the part that was missing/broken
       await sendWhatsAppMessage(chatId, reply);
       await addMessage(chatId, "assistant", reply);
     }
+
+    await addMessage(chatId, "user", msg);
+    return res.sendStatus(200);
 
     await addMessage(chatId, "user", msg);
     return res.sendStatus(200);
@@ -537,3 +529,17 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.listen(process.env.PORT || 3000, () => console.log("Server running"));
+
+function humanizeReply(text) {
+  if (!text) return text;
+  let t = text.trim();
+
+  t = t.replace(/HOT_LEAD_DETECTED/g, "").trim();
+  t = t.replace(/(¿te interesa.*|¿quieres.*|¿deseas.*|¿en qué.*|¿te parece.*)$/i, "");
+  t = t.replace(/(estoy aquí.*|con gusto.*|avísame.*|decime.*)$/i, "");
+  t = t.replace(/\?{2,}/g, "?").trim();
+  const lines = t.split("\n").map(l => l.trim()).filter(Boolean);
+  t = lines.slice(0, 2).join("\n");
+
+  return t.trim();
+}
