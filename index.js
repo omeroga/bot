@@ -12,85 +12,51 @@ const OPENAI_API_KEY = (process.env.OPENAI_API_KEY || "").trim();
 const SUPABASE_URL = (process.env.SUPABASE_URL || "").trim();
 const SUPABASE_SERVICE_ROLE_KEY = (process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
 
-function assertEnv() {
-  if (!GREEN_API_ID) console.error("❌ CRITICAL: GREEN_API_ID is missing");
-  if (!GREEN_API_TOKEN) console.error("❌ CRITICAL: GREEN_API_TOKEN is missing");
-  if (!OPENAI_API_KEY) console.error("❌ CRITICAL: OPENAI_API_KEY is missing");
-  if (!SUPABASE_URL) console.error("❌ CRITICAL: SUPABASE_URL is missing");
-  if (!SUPABASE_SERVICE_ROLE_KEY) console.error("❌ CRITICAL: SUPABASE_SERVICE_ROLE_KEY is missing");
-}
-assertEnv();
-
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
 });
 
-// ----------------- Multi-client inventory cache (per sheetUrl) -----------------
 const inventoryCaches = {};
 const INVENTORY_TTL_MS = 60 * 1000;
-// Background task to clear old caches every 24 hours
+
 setInterval(() => {
   const now = Date.now();
   for (const sheetUrl in inventoryCaches) {
     if (now - inventoryCaches[sheetUrl].ts > 24 * 60 * 60 * 1000) {
       delete inventoryCaches[sheetUrl];
-      console.log(`🗑️ Cache cleared for: ${sheetUrl}`);
     }
   }
-}, 24 * 60 * 60 * 1000);
+}, 86400000);
 
-// ----------------- Robust CSV parse -----------------
 function parseCsvLine(line) {
   const out = [];
   let cur = "";
   let inQuotes = false;
-
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
-
     if (ch === '"') {
-      if (inQuotes && line[i + 1] === '"') {
-        cur += '"';
-        i++;
-      } else {
-        inQuotes = !inQuotes;
-      }
+      if (inQuotes && line[i + 1] === '"') { cur += '"'; i++; } 
+      else { inQuotes = !inQuotes; }
       continue;
     }
-
-    if (ch === "," && !inQuotes) {
-      out.push(cur.trim());
-      cur = "";
-      continue;
-    }
-
+    if (ch === "," && !inQuotes) { out.push(cur.trim()); cur = ""; continue; }
     cur += ch;
   }
-
   out.push(cur.trim());
   return out;
 }
 
 function normalizeKey(k) {
-  return String(k || "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "_")
-    .replace(/[^\w\u00C0-\u024F\u0590-\u05FF_]/g, "");
+  return String(k || "").trim().toLowerCase().replace(/\s+/g, "_").replace(/[^\w\u00C0-\u024F\u0590-\u05FF_]/g, "");
 }
 
 function splitPhotoUrls(value) {
   const raw = String(value || "").trim();
   if (!raw) return [];
-  return raw
-    .split(/[\s,|;\n\r]+/g)
-    .map((p) => p.trim())
-    .filter((p) => /^https?:\/\/\S+/i.test(p));
+  return raw.split(/[\s,|;\n\r]+/g).map((p) => p.trim()).filter((p) => /^https?:\/\/\S+/i.test(p));
 }
 
-function safeString(v) {
-  return String(v == null ? "" : v).trim();
-}
+function safeString(v) { return String(v == null ? "" : v).trim(); }
 
 function parseNumberLoose(v) {
   const s = safeString(v).replace(/[, ]/g, "");
@@ -102,6 +68,7 @@ function parseNumberLoose(v) {
 
 function headerScore(headerNorm, patterns) {
   let score = 0;
+  if (!patterns) return 0;
   for (const p of patterns) {
     if (headerNorm.includes(p)) score += 2;
     if (headerNorm === p) score += 3;
@@ -109,26 +76,17 @@ function headerScore(headerNorm, patterns) {
   return score;
 }
 
-function detectFieldKeys(headers) {
-  const canonPatterns = {
-    model: ["modelo", "model", "vehiculo", "vehículo", "auto", "carro", "name", "nombre"],
-    brand: ["marca", "brand", "make", "fabricante"],
-    year: ["año", "ano", "year", "modelyear"],
-    price: ["precio", "price", "q", "quetzal", "quetzales", "usd", "dolar", "dólar", "dolares", "dólares"],
-    photos: ["fotos", "foto", "photos", "images", "imagenes", "imágenes", "galeria", "galería", "links", "url"],
-  };
-
+function detectFieldKeys(headers, fieldMapping) {
   const normMap = headers.map((h) => ({ orig: h, norm: normalizeKey(h) }));
-
   function pickBest(field) {
     let best = { orig: "", score: 0 };
+    const patterns = fieldMapping && fieldMapping[field] ? fieldMapping[field] : [];
     for (const h of normMap) {
-      const s = headerScore(h.norm, canonPatterns[field]);
+      const s = headerScore(h.norm, patterns);
       if (s > best.score) best = { orig: h.orig, score: s };
     }
     return best.score >= 3 ? best.orig : "";
   }
-
   return {
     modelKey: pickBest("model"),
     brandKey: pickBest("brand"),
@@ -145,394 +103,173 @@ function hashId(s) {
     h ^= str.charCodeAt(i);
     h = Math.imul(h, 16777619);
   }
-  return `car_${(h >>> 0).toString(16)}`;
+  return `item_${(h >>> 0).toString(16)}`;
 }
 
-function buildSearchableText(car) {
-  const parts = [];
-  parts.push(safeString(car.brand));
-  parts.push(safeString(car.model));
-  parts.push(safeString(car.year));
-  parts.push(safeString(car.price));
-  for (const k of Object.keys(car.details || {})) {
-    parts.push(safeString(k));
-    parts.push(safeString(car.details[k]));
+function buildSearchableText(item) {
+  const parts = [safeString(item.brand), safeString(item.model), safeString(item.year), safeString(item.price)];
+  for (const k of Object.keys(item.details || {})) {
+    parts.push(safeString(k), safeString(item.details[k]));
   }
   return parts.join(" ").toLowerCase();
 }
 
-function slimCarRow(rawRow, fieldKeys) {
+function slimRow(rawRow, fieldKeys) {
   const details = {};
   const rawPhotos = [];
-
   const model = safeString(rawRow[fieldKeys.modelKey] || "");
   const brand = safeString(rawRow[fieldKeys.brandKey] || "");
   const year = safeString(rawRow[fieldKeys.yearKey] || "");
   const price = safeString(rawRow[fieldKeys.priceKey] || "");
-
   if (fieldKeys.photosKey) rawPhotos.push(...splitPhotoUrls(rawRow[fieldKeys.photosKey]));
-
   for (const k of Object.keys(rawRow || {})) {
     const v = safeString(rawRow[k]);
-    if (k === fieldKeys.modelKey || k === fieldKeys.brandKey || k === fieldKeys.yearKey || k === fieldKeys.priceKey || k === fieldKeys.photosKey) continue;
+    if ([fieldKeys.modelKey, fieldKeys.brandKey, fieldKeys.yearKey, fieldKeys.priceKey, fieldKeys.photosKey].includes(k)) continue;
     const urls = splitPhotoUrls(v);
     if (urls.length) { rawPhotos.push(...urls); continue; }
     details[k] = v;
   }
-
   const cleanPhotos = Array.from(new Set(rawPhotos)).map((url) => {
-        if (url.includes("drive.google.com")) {
+    if (url.includes("drive.google.com")) {
       const fileId = url.match(/\/d\/(.+?)\//)?.[1] || url.match(/id=(.+?)(&|$)/)?.[1];
       return fileId ? `https://lh3.googleusercontent.com/d/${fileId}` : url;
     }
     return url;
   });
-
-  const car = {
-    id: hashId(`${brand}|${model}|${year}|${price}`),
-    brand,
-    model,
-    year,
-    price,
-    photos: cleanPhotos,
-    details,
-  };
-
-  car.searchableText = buildSearchableText(car);
-  return car;
+  const item = { id: hashId(`${brand}|${model}|${year}|${price}`), brand, model, year, price, photos: cleanPhotos, details };
+  item.searchableText = buildSearchableText(item);
+  return item;
 }
 
-async function loadInventoryBySheetUrl(sheetUrl) {
+async function loadInventory(client) {
   const t = Date.now();
-  const cache = inventoryCaches[sheetUrl];
-
+  const cache = inventoryCaches[client.sheetUrl];
   if (cache?.rows?.length && t - cache.ts < INVENTORY_TTL_MS) return cache.rows;
-
-  const sheetRes = await axios.get(sheetUrl, { timeout: 20000 });
-  const csv = String(sheetRes.data || "");
-
-  const lines = csv
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
-
-  if (lines.length < 2) {
-    inventoryCaches[sheetUrl] = { ts: t, rows: [] };
-    return [];
-  }
-
+  const res = await axios.get(client.sheetUrl, { timeout: 20000 });
+  const lines = String(res.data || "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (lines.length < 2) return [];
   const headers = parseCsvLine(lines[0]);
-  const fieldKeys = detectFieldKeys(headers);
-
-  const rows = [];
-  for (const line of lines.slice(1)) {
+  const fieldKeys = detectFieldKeys(headers, client.fieldMapping);
+  const rows = lines.slice(1).map(line => {
     const cols = parseCsvLine(line);
     const raw = {};
     headers.forEach((h, i) => (raw[h] = cols[i] || ""));
-    rows.push(slimCarRow(raw, fieldKeys));
-  }
-
-  inventoryCaches[sheetUrl] = { ts: t, rows };
+    return slimRow(raw, fieldKeys);
+  });
+  inventoryCaches[client.sheetUrl] = { ts: t, rows };
   return rows;
 }
 
-// ----------------- Intent / matching -----------------
 function isAskingForPhotos(text) {
-  const t = (text || "").toLowerCase();
-  return ["foto", "fotos", "pictures", "pics", "images", "imagen", "ver fotos", "mandame fotos", "mándame fotos"].some((h) => t.includes(h));
+  return ["foto", "fotos", "pictures", "pics", "images", "imagen"].some((h) => (text || "").toLowerCase().includes(h));
 }
 
-function extractBudget(text) {
-  const t = (text || "").toLowerCase();
-  const hasPriceContext = ["q", "quetzal", "quetzales", "usd", "$", "precio", "presupuesto", "budget", "hasta", "max", "máximo"].some((h) => t.includes(h));
-  if (!hasPriceContext) return null;
-
-  const nums = String(text).replace(/[,]/g, "").match(/\d{2,9}/g) || [];
-  const values = nums.map((x) => Number(x)).filter((n) => Number.isFinite(n));
-  if (!values.length) return null;
-  return Math.max(...values);
-}
-
-function detectType(text) {
-  const t = (text || "").toLowerCase();
-
-  if (t.includes("pickup") || t.includes("pick up")) return "pickup";
-  if (t.includes("suv") || t.includes("camioneta")) return "suv";
-  if (t.includes("sedan") || t.includes("sedán")) return "sedan";
-  if (t.includes("hatchback") || t.includes("hatch")) return "hatchback";
-
-  return null;
-}
-
-function extractKeywords(text) {
-  const t = (text || "").toLowerCase();
-  const kws = [];
-  const list = [
-    { k: "4x4", p: ["4x4", "4wd", "awd", "doble_traccion", "doble tracción", "traccion", "tracción"] },
-    { k: "diesel", p: ["diesel", "diésel"] },
-    { k: "gasoline", p: ["gasolina", "gasoline"] },
-    { k: "automatic", p: ["automatico", "automático", "automatica", "automática"] },
-    { k: "manual", p: ["manual", "mecánico", "mecanico"] },
-    { k: "newer", p: ["reciente", "nuevo", "nuevito", "como nuevo"] },
-  ];
-  for (const item of list) if (item.p.some((x) => t.includes(x))) kws.push(item.k);
-  return Array.from(new Set(kws));
-}
-
-function scoreCar(car, intent) {
-  let score = 0;
-  const text = car.searchableText || "";
-
-  if (intent.type && text.includes(intent.type)) score += 6;
-  for (const kw of intent.keywords) if (text.includes(kw)) score += 4;
-
-  const yearNum = parseNumberLoose(car.year);
-  if (intent.keywords.includes("newer") && yearNum) score += Math.min(10, Math.max(0, (yearNum - 2012) / 2));
-
-  if (intent.budget) {
-    const priceNum = parseNumberLoose(car.price);
-    if (priceNum != null) {
-      if (priceNum <= intent.budget) score += 12 - Math.min(12, (intent.budget - priceNum) / 5000);
-      else score -= 6;
-    }
-  }
-
-  if (car.photos && car.photos.length) score += 1;
-  return score;
-}
-
-function pickCandidates(inventory, userMessage) {
-  const intent = {
-    budget: extractBudget(userMessage),
-    type: detectType(userMessage),
-    keywords: extractKeywords(userMessage),
-  };
-
-  const ranked = inventory
-    .map((car) => ({ car, score: scoreCar(car, intent) }))
-    .sort((a, b) => b.score - a.score)
-    .map((x) => x.car);
-
-  return ranked;
-}
-
-// ----------------- Supabase memory functions -----------------
-async function ensureSession(chatId, lang) {
-  const payload = { chat_id: chatId, lang: lang || null, updated_at: new Date().toISOString() };
-  const { error } = await supabase.from("chat_sessions").upsert(payload, { onConflict: "chat_id" });
-  if (error) throw error;
-}
-
-async function getLastMessages(chatId, limit = 12) {
-  const { data, error } = await supabase
-    .from("chat_messages")
-    .select("role,content,created_at")
-    .eq("chat_id", chatId)
-    .order("created_at", { ascending: false })
-    .limit(limit);
-
-  if (error) throw error;
-  return (data || []).slice().reverse().map((m) => ({ role: m.role, content: m.content }));
-}
-
-async function addMessage(chatId, role, content) {
-  const { error } = await supabase.from("chat_messages").insert({ chat_id: chatId, role, content });
-  if (error) throw error;
-
-  const { data: ids, error: e2 } = await supabase
-    .from("chat_messages")
-    .select("id")
-    .eq("chat_id", chatId)
-    .order("created_at", { ascending: false })
-    .range(12, 200);
-
-  if (e2) throw e2;
-  if (ids && ids.length) {
-    const toDelete = ids.map((x) => x.id);
-    const { error: e3 } = await supabase.from("chat_messages").delete().in("id", toDelete);
-    if (e3) throw e3;
-  }
-}
-
-async function setCandidates(chatId, candidates) {
-  const { error } = await supabase
-    .from("chat_sessions")
-    .update({ last_candidates: candidates || [], updated_at: new Date().toISOString() })
-    .eq("chat_id", chatId);
-  if (error) throw error;
-}
-
-async function getCandidates(chatId) {
-  const { data, error } = await supabase.from("chat_sessions").select("last_candidates").eq("chat_id", chatId).single();
-  if (error) return [];
-  return Array.isArray(data?.last_candidates) ? data.last_candidates : [];
-}
-
-// ----------------- Subset builder -----------------
 async function buildInventorySubset(chatId, inventory, userMessage) {
   const wantsPhotos = isAskingForPhotos(userMessage);
-  const memory = await getLastMessages(chatId, 5);
-  const fullContext = memory.map(m => m.content).join(" ") + " " + userMessage;
-
+  const ranked = inventory.slice(0, 10); 
   if (wantsPhotos) {
     const last = await getCandidates(chatId);
     if (last.length > 0) return last;
-
-    const withPhotos = inventory.filter((c) => c.photos && c.photos.length);
-    const ranked = pickCandidates(withPhotos.length ? withPhotos : inventory, fullContext);
-    return ranked.slice(0, 3);
+    return ranked.filter(i => i.photos.length).slice(0, 3);
   }
-
-  const ranked = pickCandidates(inventory, fullContext);
   const top = ranked.slice(0, 8);
-
   await setCandidates(chatId, top.slice(0, 5));
   return top;
 }
 
-// ----------------- OpenAI + GreenAPI -----------------
-async function sendWhatsAppMessage(chatId, message) {
-  try {
-    const text = String(message || "").trim();
-    if (!text || text === "SEND_PHOTOS_NOW") return; 
-
-    const textUrl = `https://api.greenapi.com/waInstance${GREEN_API_ID}/sendMessage/${GREEN_API_TOKEN}`;
-    await axios.post(textUrl, { chatId, message: text }, { timeout: 20000 });
-  } catch (err) {
-    console.error("❌ sendWhatsAppMessage error:", err.message);
-  }
+async function getLastMessages(chatId, limit = 12) {
+  const { data } = await supabase.from("chat_messages").select("role,content").eq("chat_id", chatId).order("created_at", { ascending: false }).limit(limit);
+  return (data || []).reverse();
 }
 
-function detectLanguage(text) {
-  const t = (text || "").toLowerCase();
-  if (/[\u0590-\u05FF]/.test(t)) return "he";
-  return "es";
+async function addMessage(chatId, role, content) {
+  await supabase.from("chat_messages").insert({ chat_id: chatId, role, content });
 }
 
-// ----------------- Webhook with Takeover Logic -----------------
+async function setCandidates(chatId, candidates) {
+  await supabase.from("chat_sessions").update({ last_candidates: candidates }).eq("chat_id", chatId);
+}
+
+async function getCandidates(chatId) {
+  const { data } = await supabase.from("chat_sessions").select("last_candidates").eq("chat_id", chatId).single();
+  return data?.last_candidates || [];
+}
+
+function isWithinBusinessHours(hours) {
+  if (!hours || !hours.start || !hours.end) return true;
+  const now = new Date(new Date().toLocaleString("en-US", {timeZone: "America/Guatemala"}));
+  const time = now.getHours() * 100 + now.getMinutes();
+  const start = parseInt(hours.start.replace(":", ""));
+  const end = parseInt(hours.end.replace(":", ""));
+  if (start < end) return time >= start && time <= end;
+  return time >= start || time <= end;
+}
+
+function humanizeReply(text) {
+  return (text || "").replace(/HOT_LEAD_DETECTED/g, "").trim();
+}
+
 app.post("/webhook", async (req, res) => {
   try {
-    if (!OPENAI_API_KEY || !GREEN_API_ID || !GREEN_API_TOKEN || !SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-      console.error("❌ CRITICAL: Missing env vars.");
-      return res.sendStatus(500);
-    }
-
     const data = req.body;
     const chatId = data?.senderData?.chatId || data?.chatId;
-
-    // 1. Human Takeover Detection (שומר על השורות המקוריות שלך)
-    if (data?.typeWebhook?.includes("outgoing") && data?.sendByApi === false && chatId) {
-      const client = getClientByChatId(chatId);
-      const hours = client?.takeoverHours || 3; 
-      const until = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
-      await supabase.from("chat_sessions").update({ takeover_until: until }).eq("chat_id", chatId);
-      console.log(`👤 Human takeover for ${chatId} until ${until}`);
-      return res.sendStatus(200);
-    }
-
-    // 2. Incoming message processing
-    if (data?.typeWebhook !== "incomingMessageReceived") return res.sendStatus(200);
-
-    const userMessage = data?.messageData?.textMessageData?.textMessage;
-    if (!chatId || !userMessage) return res.sendStatus(200);
-
-    if (String(chatId).endsWith("@g.us")) return res.sendStatus(200);
-    if (!isAllowedChatId(chatId)) return res.sendStatus(200);
-
-    // 3. Silence Check
-    const { data: sessionData } = await supabase.from("chat_sessions").select("takeover_until").eq("chat_id", chatId).single();
-    if (sessionData?.takeover_until && new Date(sessionData.takeover_until) > new Date()) {
-      return res.sendStatus(200);
-    }
+    if (!chatId || !isAllowedChatId(chatId)) return res.sendStatus(200);
 
     const client = getClientByChatId(chatId);
     if (!client) return res.sendStatus(200);
 
-    const msg = String(userMessage).trim();
-    if (!msg) return res.sendStatus(200);
+    if (!isWithinBusinessHours(client.businessHours)) return res.sendStatus(200);
+    
+    if (data?.typeWebhook?.includes("outgoing") && data?.sendByApi === false) {
+      const until = new Date(Date.now() + (client.takeoverHours || 3) * 3600000).toISOString();
+      await supabase.from("chat_sessions").upsert({ chat_id: chatId, takeover_until: until }, { onConflict: 'chat_id' });
+      return res.sendStatus(200);
+    }
 
-    const lang = detectLanguage(msg);
-    await ensureSession(chatId, lang);
+    if (data?.typeWebhook !== "incomingMessageReceived") return res.sendStatus(200);
+    const userMessage = data?.messageData?.textMessageData?.textMessage;
+    if (!userMessage) return res.sendStatus(200);
+
+    const { data: session } = await supabase.from("chat_sessions").select("takeover_until").eq("chat_id", chatId).single();
+    if (session?.takeover_until && new Date(session.takeover_until) > new Date()) return res.sendStatus(200);
 
     const memory = await getLastMessages(chatId, 12);
-    const inventory = await loadInventoryBySheetUrl(client.sheetUrl);
-    const inventorySubset = await buildInventorySubset(chatId, inventory, msg);
+    const inventory = await loadInventory(client);
+    const subset = await buildInventorySubset(chatId, inventory, userMessage);
 
-    const system = `${client.systemPrompt}\nInventory available right now:\n${JSON.stringify(inventorySubset)}`.trim();
+    const aiResp = await axios.post("https://api.openai.com/v1/chat/completions", {
+      model: "gpt-4o-mini",
+      temperature: client.temperature ?? 0.4,
+      messages: [{ role: "system", content: `${client.systemPrompt}\nInventory:\n${JSON.stringify(subset)}` }, ...memory, { role: "user", content: userMessage }]
+    }, { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } });
 
-    const aiResp = await axios.post(
-      "https://api.openai.com/v1/chat/completions",
-      {
-        model: "gpt-4o-mini",
-        temperature: 0.4,
-        messages: [{ role: "system", content: system }, ...memory, { role: "user", content: msg }],
-      },
-      {
-        headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
-        timeout: 30000,
-      }
-    );
-
-    const rawReply = String(aiResp?.data?.choices?.[0]?.message?.content || "").trim();
+    const rawReply = aiResp.data.choices[0].message.content;
     const isHotLead = rawReply.includes("HOT_LEAD_DETECTED");
     const reply = humanizeReply(rawReply);
 
-    // 4. Agent Notification
     if (isHotLead && client.agentPhone) {
-      const agentUrl = `https://api.greenapi.com/waInstance${GREEN_API_ID}/sendMessage/${GREEN_API_TOKEN}`;
-      const agentMsg = `🔥 *HOT LEAD DETECTED*\nCustomer: ${chatId.split('@')[0]}`;
-      axios.post(agentUrl, { chatId: client.agentPhone, message: agentMsg }).catch(e => {});
+      await axios.post(`https://api.greenapi.com/waInstance${GREEN_API_ID}/sendMessage/${GREEN_API_TOKEN}`, { chatId: client.agentPhone, message: `🔥 Hot Lead: ${chatId}` });
     }
 
-    // 5. Main Logic: Send Photos OR Text
     if (rawReply.toUpperCase().includes("SEND_PHOTOS_NOW")) {
-      const parts = rawReply.split(" ");
-      const carId = parts.length > 1 ? parts[1].trim() : null;
-      let car = inventory.find(c => c.id === carId) || inventorySubset[0];
-
-      if (car?.photos?.length) {
-        for (const url of car.photos.slice(0, client.maxPhotos || 5)) {
-          const fileUrl = `https://api.greenapi.com/waInstance${GREEN_API_ID}/sendFileByUrl/${GREEN_API_TOKEN}`;
-          await axios.post(fileUrl, { chatId, urlFile: url, fileName: "car.jpg" }).catch(e => {});
+      const carId = rawReply.split(" ").find(p => p.startsWith("item_")) || subset[0]?.id;
+      const item = inventory.find(c => c.id === carId);
+      if (item?.photos) {
+        for (const url of item.photos.slice(0, client.maxPhotos || 5)) {
+          await axios.post(`https://api.greenapi.com/waInstance${GREEN_API_ID}/sendFileByUrl/${GREEN_API_TOKEN}`, { chatId, urlFile: url, fileName: "image.jpg" });
         }
       }
-      await addMessage(chatId, "assistant", `Sent photos for ${car?.model || 'car'}`);
     } else {
-      await sendWhatsAppMessage(chatId, reply);
-      await addMessage(chatId, "assistant", reply);
+      await axios.post(`https://api.greenapi.com/waInstance${GREEN_API_ID}/sendMessage/${GREEN_API_TOKEN}`, { chatId, message: reply });
     }
 
-    await addMessage(chatId, "user", msg);
-    return res.sendStatus(200);
-
+    await addMessage(chatId, "user", userMessage);
+    await addMessage(chatId, "assistant", reply);
+    res.sendStatus(200);
   } catch (e) {
-    console.error("❌ Webhook Error:", e.message);
-    try {
-      const currentChatId = req.body?.senderData?.chatId || req.body?.chatId;
-      if (currentChatId) {
-        const errorUrl = `https://api.greenapi.com/waInstance${GREEN_API_ID}/sendMessage/${GREEN_API_TOKEN}`;
-        await axios.post(errorUrl, { 
-          chatId: currentChatId, 
-          message: "Disculpa, tuve un problemita técnico. ¿Me podrías repetir lo último?" 
-        });
-      }
-    } catch (sendErr) {
-      console.error("❌ Failed to send fallback message:", sendErr.message);
-    }
-    return res.sendStatus(500);
+    console.error(e);
+    res.sendStatus(500);
   }
 });
 
-app.listen(process.env.PORT || 3000, () => console.log("Server running"));
-
-function humanizeReply(text) {
-  if (!text) return text;
-  let t = text.trim();
-  t = t.replace(/HOT_LEAD_DETECTED/g, "").trim();
-  t = t.replace(/(¿te interesa.*|¿quieres.*|¿deseas.*|¿en qué.*|¿te parece.*)$/i, "");
-  t = t.replace(/(estoy aquí.*|con gusto.*|avísame.*|decime.*)$/i, "");
-  t = t.replace(/\?{2,}/g, "?").trim();
-  const lines = t.split("\n").map(l => l.trim()).filter(Boolean);
-  t = lines.slice(0, 2).join("\n");
-  return t.trim();
-}
+app.listen(process.env.PORT || 3000);
