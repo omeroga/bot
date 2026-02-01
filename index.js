@@ -165,16 +165,29 @@ function isAskingForPhotos(text) {
 }
 
 async function buildInventorySubset(chatId, inventory, userMessage) {
+  const query = userMessage.toLowerCase();
   const wantsPhotos = isAskingForPhotos(userMessage);
-  const ranked = inventory.slice(0, 10); 
+
   if (wantsPhotos) {
     const last = await getCandidates(chatId);
-    if (last.length > 0) return last;
-    return ranked.filter(i => i.photos.length).slice(0, 3);
+    if (last && last.length > 0) return last;
   }
-  const top = ranked.slice(0, 8);
-  await setCandidates(chatId, top.slice(0, 5));
-  return top;
+
+  let matched = inventory.filter(item => {
+    const brand = (item.brand || "").toLowerCase();
+    const model = (item.model || "").toLowerCase();
+    return (brand && query.includes(brand)) || (model && query.includes(model));
+  });
+
+  let finalSubset;
+  if (matched.length > 0) {
+    finalSubset = matched.slice(0, 15);
+  } else {
+    finalSubset = inventory.slice(0, 20);
+  }
+  await setCandidates(chatId, finalSubset.slice(0, 5));
+
+  return finalSubset;
 }
 
 async function getLastMessages(chatId, limit = 12) {
@@ -243,9 +256,9 @@ app.post("/webhook", async (req, res) => {
       messages: [{ role: "system", content: `${client.systemPrompt}\nInventory:\n${JSON.stringify(subset)}` }, ...memory, { role: "user", content: userMessage }]
     }, { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } });
 
-    const rawReply = aiResp.data.choices[0].message.content;
+        const rawReply = aiResp.data.choices[0].message.content;
     const isHotLead = rawReply.includes("HOT_LEAD_DETECTED");
-    const reply = humanizeReply(rawReply);
+    const reply = humanizeReply(rawReply); // כאן אנחנו מנקים את ה-Hot Lead
 
     if (isHotLead && client.agentPhone) {
       await axios.post(`https://api.greenapi.com/waInstance${GREEN_API_ID}/sendMessage/${GREEN_API_TOKEN}`, { chatId: client.agentPhone, message: `🔥 Hot Lead: ${chatId}` });
@@ -254,6 +267,12 @@ app.post("/webhook", async (req, res) => {
     if (rawReply.toUpperCase().includes("SEND_PHOTOS_NOW")) {
       const carId = rawReply.split(" ").find(p => p.startsWith("item_")) || subset[0]?.id;
       const item = inventory.find(c => c.id === carId);
+      
+      const cleanTextBeforePhotos = reply.replace(/SEND_PHOTOS_NOW\s+item_\w+/gi, "").trim();
+      if (cleanTextBeforePhotos) {
+        await axios.post(`https://api.greenapi.com/waInstance${GREEN_API_ID}/sendMessage/${GREEN_API_TOKEN}`, { chatId, message: cleanTextBeforePhotos });
+      }
+
       if (item?.photos) {
         for (const url of item.photos.slice(0, client.maxPhotos || 5)) {
           await axios.post(`https://api.greenapi.com/waInstance${GREEN_API_ID}/sendFileByUrl/${GREEN_API_TOKEN}`, { chatId, urlFile: url, fileName: "image.jpg" });
